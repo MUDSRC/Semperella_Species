@@ -1,4 +1,9 @@
-.Rproj.user
+# R / RStudio session files
+.Rproj.user/
 .Rhistory
 .RData
 .Ruserdata
+
+# Project input/output data files
+clade_metadata.csv
+distances_samples.xlsx
