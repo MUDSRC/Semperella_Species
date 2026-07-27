@@ -38,7 +38,7 @@ clean_taxon <- function(x) {
     str_squish()
 }
 
-# ---- 1) Input files
+# ---- 1) Input files -----
 metadata <- read.csv(meta_file, stringsAsFactors = FALSE) %>%
   select(Taxon, Clade, Subclade) %>%
   filter(!is.na(Taxon), Taxon != "") %>%
@@ -80,11 +80,18 @@ pairwise_all <- map_dfr(sheets, function(sh) {
     )
 })
 
+# ---- 2) Data cleaning and joins metadata with distances -----
 pairwise_annotated <- pairwise_all %>%
   left_join(metadata, by = c("taxon1" = "Taxon")) %>%
-  rename(clade1 = Clade, subclade1 = Subclade) %>%
+  rename(
+    clade1 = Clade,
+    subclade1 = Subclade
+  ) %>%
   left_join(metadata, by = c("taxon2" = "Taxon")) %>%
-  rename(clade2 = Clade, subclade2 = Subclade)
+  rename(
+    clade2 = Clade,
+    subclade2 = Subclade
+  )
 
 # Check unmatched taxa
 unmatched_taxa <- pairwise_annotated %>%
@@ -96,7 +103,7 @@ unmatched_taxa <- pairwise_annotated %>%
 pairwise_ingroup <- pairwise_annotated %>%
   filter(!is.na(clade1), !is.na(clade2))
 
-# 1. BETWEEN CLADES
+# ---- 3) Distance between clades -----
 between_clades <- pairwise_ingroup %>%
   filter(clade1 != clade2) %>%
   mutate(
@@ -115,7 +122,7 @@ between_clades <- pairwise_ingroup %>%
     .groups = "drop"
   )
 
-# 2. WITHIN CLADES
+# ---- 4) Distance within clades -----
 within_clades <- pairwise_ingroup %>%
   filter(clade1 == clade2) %>%
   group_by(marker, metric, clade = clade1) %>%
@@ -130,7 +137,7 @@ within_clades <- pairwise_ingroup %>%
     .groups = "drop"
   )
 
-# 3. BETWEEN SUBCLADES
+# ---- 5) Distance between sub-clades -----
 # Defined only within the same main clade.
 between_subclades <- pairwise_ingroup %>%
   filter(clade1 == clade2, subclade1 != subclade2) %>%
@@ -150,7 +157,7 @@ between_subclades <- pairwise_ingroup %>%
     .groups = "drop"
   )
 
-# 4. WITHIN SUBCLADES
+# ---- 6) Distance within sub-clades -----
 within_subclades <- pairwise_ingroup %>%
   filter(clade1 == clade2, subclade1 == subclade2) %>%
   group_by(marker, metric, clade = clade1, subclade = subclade1) %>%
@@ -165,15 +172,195 @@ within_subclades <- pairwise_ingroup %>%
     .groups = "drop"
   )
 
-# ---- X) Save output
+# ---- 7) Distances among individual Semperella and Semperella-like  -----
+semperella_distances <- pairwise_ingroup %>%
+  filter(
+    subclade1 %in% c("Semperella", "Semperella-like"),
+    subclade2 %in% c("Semperella", "Semperella-like"),
+    taxon1 != taxon2
+  ) %>%
+  mutate(
+    # Standardise the order of the two specimens
+    taxon_a = pmin(taxon1, taxon2),
+    taxon_b = pmax(taxon1, taxon2),
+    
+    subclade_a = if_else(
+      taxon1 == taxon_a,
+      subclade1,
+      subclade2
+    ),
+    
+    subclade_b = if_else(
+      taxon2 == taxon_b,
+      subclade2,
+      subclade1
+    ),
+    
+    comparison = paste(taxon_a, taxon_b, sep = "_vs_"),
+    
+    comparison_type = case_when(
+      subclade_a == "Semperella" &
+        subclade_b == "Semperella" ~
+        "within Semperella",
+      
+      subclade_a == "Semperella-like" &
+        subclade_b == "Semperella-like" ~
+        "within Semperella-like",
+      
+      TRUE ~ "Semperella vs Semperella-like"
+    )
+  ) %>%
+  select(
+    marker,
+    metric,
+    comparison_type,
+    comparison,
+    taxon_a,
+    taxon_b,
+    subclade_a,
+    subclade_b,
+    value
+  ) %>%
+  arrange(
+    marker,
+    metric,
+    comparison_type,
+    taxon_a,
+    taxon_b
+  )
+
+# p-distance table
+semperella_pdistance_table <- semperella_distances %>%
+  filter(metric == "p-distance") %>%
+  mutate(
+    Distance = round(value, 4)
+  ) %>%
+  select(
+    Gene = marker,
+    `Comparison type` = comparison_type,
+    `Specimen 1` = taxon_a,
+    `Specimen 2` = taxon_b,
+    Distance
+  )
+
+# bp difference table
+semperella_bp_table <- semperella_distances %>%
+  filter(metric == "bp") %>%
+  mutate(
+    Differences = as.integer(value)
+  ) %>%
+  select(
+    Gene = marker,
+    `Comparison type` = comparison_type,
+    `Specimen 1` = taxon_a,
+    `Specimen 2` = taxon_b,
+    Differences
+  )
+
+# ---- 8) Complete Semperella p-distance summary --------------------------
+semperella_summary <- semperella_distances %>%
+  filter(metric == "p-distance") %>%
+  mutate(
+    Gene = case_when(
+      str_to_lower(marker) == "16s" ~ "16S",
+      str_to_lower(marker) == "28s" ~ "28S",
+      str_to_lower(marker) == "coi" ~ "COI",
+      TRUE ~ marker
+    )
+  ) %>%
+  select(
+    `Comparison type` = comparison_type,
+    `Specimen 1` = taxon_a,
+    `Specimen 2` = taxon_b,
+    Gene,
+    Distance = value
+  ) %>%
+  distinct() %>%
+  pivot_wider(
+    names_from = Gene,
+    values_from = Distance
+  ) %>%
+  arrange(
+    factor(
+      `Comparison type`,
+      levels = c(
+        "Within Semperella",
+        "Within Semperella-like",
+        "Between lineages"
+      )
+    ),
+    `Specimen 1`,
+    `Specimen 2`
+  ) %>%
+  mutate(
+    across(
+      any_of(c("16S", "28S", "COI")),
+      ~ round(.x, 4)
+    )
+  )
+
+# ---- 9) Genetic-distance gap check --------------------------------------
+
+semperella_gap_check <- semperella_distances %>%
+  filter(metric == "p-distance") %>%
+  mutate(
+    distance_class = if_else(
+      subclade_a == subclade_b,
+      "within",
+      "between"
+    )
+  ) %>%
+  group_by(marker, distance_class) %>%
+  summarise(
+    n_comparisons = n(),
+    minimum = min(value, na.rm = TRUE),
+    maximum = max(value, na.rm = TRUE),
+    mean = mean(value, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = distance_class,
+    values_from = c(
+      n_comparisons,
+      minimum,
+      maximum,
+      mean
+    )
+  ) %>%
+  mutate(
+    genetic_gap = minimum_between - maximum_within,
+    all_within_lower = maximum_within < minimum_between,
+    interpretation = if_else(
+      all_within_lower,
+      "All within-lineage distances are lower than all between-lineage distances",
+      "Distance ranges overlap"
+    )
+  ) %>%
+  mutate(
+    across(
+      c(
+        minimum_within,
+        maximum_within,
+        mean_within,
+        minimum_between,
+        maximum_between,
+        mean_between,
+        genetic_gap
+      ),
+      ~ round(.x, 4)
+    )
+  )
+
+# ---- 10) Save outputs -----
 write_xlsx(
   list(
-    pairwise_annotated = pairwise_annotated,
-    between_clades = between_clades,
-    within_clades = within_clades,
-    between_subclades = between_subclades,
-    within_subclades = within_subclades,
-    unmatched_taxa = unmatched_taxa
+    "Between clades" = between_clades,
+    "Within clades" = within_clades,
+    "Between subclades" = between_subclades,
+    "Within subclades" = within_subclades,
+    "semperella_distances" = semperella_distances,
+    "semperella_summary" = semperella_summary,
+    "semperella_gap_check" = semperella_gap_check
   ),
-  "clade_distance_summary.xlsx"
+  "genetic_distance_summaries.xlsx"
 )
